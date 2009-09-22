@@ -464,6 +464,12 @@ class DB:
         return self._ctx
     ctx = property(_getctx)
     
+    def escape_key(self, key):
+        return key
+
+    def escape_tbl(self, tbl):
+        return tbl
+
     def _load_context(self, ctx):
         ctx.dbq_count = 0
         ctx.transactions = [] # stack of transactions
@@ -540,7 +546,7 @@ class DB:
         try:
             a = time.time()
             paramstyle = getattr(self, 'paramstyle', 'pyformat')
-            out = cur.execute(sql_query.query(paramstyle), sql_query.values())
+            out = cur.execute(sql_query.query(paramstyle), tuple(sql_query.values()))
             b = time.time()
         except:
             if self.printing:
@@ -695,9 +701,9 @@ class DB:
         def q(x): return "(" + x + ")"
         
         if values:
-            _keys = SQLQuery.join(values.keys(), ', ')
+            _keys = SQLQuery.join(map(self.escape_key, values.keys()), ', ')
             _values = SQLQuery.join([sqlparam(v) for v in values.values()], ', ')
-            sql_query = "INSERT INTO %s " % tablename + q(_keys) + ' VALUES ' + q(_values)
+            sql_query = "INSERT INTO %s " % self.escape_bl(tablename) + q(_keys) + ' VALUES ' + q(_values)
         else:
             sql_query = SQLQuery("INSERT INTO %s DEFAULT VALUES" % tablename)
 
@@ -757,7 +763,7 @@ class DB:
             if v.keys() != keys:
                 raise ValueError, 'Bad data'
 
-        sql_query = SQLQuery('INSERT INTO %s (%s) VALUES ' % (tablename, ', '.join(keys))) 
+        sql_query = SQLQuery('INSERT INTO %s (%s) VALUES ' % (map(self.escape_tbl(tablename), ', '.join(map(self.escape_key, keys)))) 
 
         data = []
         for row in values:
@@ -931,6 +937,12 @@ class SqliteDB(DB):
         keywords['database'] = keywords.pop('db')
         self.dbname = "sqlite"        
         DB.__init__(self, db, keywords)
+
+    def escape_key(slef, key):
+        return '`%s`' % key
+
+    def escape_tbl(slef, tbl):
+        return '`%s`' % tbl
 
     def _process_insert_query(self, query, tablename, seqname):
         return query, SQLQuery('SELECT last_insert_rowid();')

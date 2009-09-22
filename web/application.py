@@ -350,7 +350,7 @@ class application:
         #@@ home is changed when the request is handled to a sub-application.
         #@@ but the real home is required for doing absolute redirects.
         ctx.realhome = ctx.home
-        ctx.ip = env.get('REMOTE_ADDR')
+        ctx.ip = env.get('HTTP_X_REAL_IP', env.get('REMOTE_ADDR'))
         ctx.method = env.get('REQUEST_METHOD')
         ctx.path = env.get('PATH_INFO')
         # http://trac.lighttpd.net/trac/ticket/406 requires:
@@ -429,6 +429,7 @@ class application:
                 result = utils.re_compile('^' + pat + '$').match(value)
                 
             if result: # it's a match
+                # [urllib.unquote(x) if x else x for x in result.groups()]
                 return what, [x for x in result.groups()]
         return None, None
         
@@ -541,6 +542,7 @@ class subdomain_application(application):
                 result = utils.re_compile('^' + pat + '$').match(value)
 
             if result: # it's a match
+                # [urllib.unquote(x) if x else x for x in result.groups()]
                 return what, [x for x in result.groups()]
         return None, None
         
