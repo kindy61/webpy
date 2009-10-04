@@ -348,7 +348,7 @@ def sqlwhere(dictionary, grouping=' AND '):
     """
     return SQLQuery.join([k + ' = ' + sqlparam(v) for k, v in dictionary.items()], grouping)
 
-def sqlquote(a): 
+def sqlquote(a):
     """
     Ensures `a` is quoted properly for use in a SQL query.
 
@@ -487,7 +487,7 @@ class DB:
             ctx.db.rollback = lambda: None
             
         def commit(unload=True):
-            # do db commit and release the connection if pooling is enabled.            
+            # do db commit and release the connection if pooling is enabled.
             ctx.db.commit()
             if unload and self.has_pooling:
                 self._unload_context(self._ctx)
@@ -560,8 +560,88 @@ class DB:
         if self.printing:
             print >> debug, '%s (%s): %s' % (round(b-a, 2), self.ctx.dbq_count, str(sql_query))
         return out
-    
-    def _where(self, where, vars): 
+
+    def _op_get(self, op):
+        def just_lr(op):
+            return lambda k,v: '%s %s %s'%(k, op, sqlparam(v))
+
+        return {
+            'eq': just_lr('='),
+            'lt': just_lr('<'),
+            'le': just_lr('<='),
+            'gt': just_lr('>'),
+            'ge': just_lr('>='),
+            'ne': just_lr('<>'),
+            'contains': just_lr('like'),
+        }.get(op)
+
+    def _op_expand_where(self, d, grouping='AND', op_mode=1):
+        """Converts a `d` to an SQL WHERE clause `SQLQuery`, and
+        expand the operate in it.
+
+            >>> _expand_sqlwhere_op({'id': 'gt:6', 'name':'contains:kindy'}, grouping='OR')
+            <sql: "(id > 6) OR (name like '%kindy%')">
+            >>> _expand_sqlwhere_op({'id': ['!ge:3'], 'name':['contains:kindy', 'isnull:']}, op_mode=2)
+            <sql: "(NOT (id >= 3)) AND ((name like '%kindy%') OR (name is NULL))">
+
+        the value can be str or list, 
+            when op_mode=1, the list[0] whill be use;
+            when op_mode=2, the [str] whill be use;
+                the value grouping by 'OR' default, 
+                you can special another one by using '_grouping:AND'
+        """
+        
+        def _expand_op(op, k, v):
+            inv = False
+            if op[:1] == '!':
+                inv = True
+                op = op[1:]
+            if not op: op = 'eq'
+            
+            op_ = self._op_get(op)
+            if not op_:
+                return NotImplemented
+            
+            sql = op_(k, v)
+            
+            if inv:
+                sql = 'NOT (%s)'%sql
+            
+            return sql
+        
+        def expand_op_1(k, v):
+            if type(v) is list: v = v[0]
+            op, v = v.split(':', 1)
+
+            return _expand_op(op, k, v)
+
+        def expand_op_2(k, v):
+            if type(v) in (str, unicode): v = [v]
+            g = 'OR'
+            w = []
+            
+            vv = v
+            for v in vv:
+                op, v = v.split(':', 1)
+                if op == '_grouping':
+                    g = v.strip()
+                    continue
+                
+                w.append(_expand_op(op, k, v))
+            
+            w = ['(%s)'%i for i in w if i]
+            return SQLQuery.join(w, ' %s '%g)
+        
+        expand_op = dict(enumerate([None, expand_op_1, expand_op_2])).get(op_mode)
+        if not expand_op:
+            return NotImplemented
+        
+        w = [expand_op(k, v) for k, v in d.items() if type(v) in (str, unicode, list)]
+        w = ['(%s)'%i for i in w if i]
+        return SQLQuery.join(w, ' %s '%grouping)
+
+    def _where(self, where, vars):
+        """used by db.update & db.delete"""
         if isinstance(where, (int, long)):
             where = "id = " + sqlparam(where)
         #@@@ for backward-compatibility
@@ -570,10 +650,10 @@ class DB:
         elif isinstance(where, SQLQuery):
             pass
         else:
-            where = reparam(where, vars)        
+            where = reparam(where, vars)
         return where
     
-    def query(self, sql_query, vars=None, processed=False, _test=False): 
+    def query(self, sql_query, vars=None, processed=False, _test=False, _rawdata=False, _rawcur=False): 
         """
         Execute SQL query `sql_query` using dictionary `vars` to interpolate it.
         If `processed=True`, `vars` is a `reparam`-style list to use 
@@ -597,16 +677,19 @@ class DB:
         db_cursor = self._db_cursor()
         self._db_execute(db_cursor, sql_query)
         
+        if _rawcur:
+            return db_cursor
+        
         if db_cursor.description:
             names = [x[0] for x in db_cursor.description]
             def iterwrapper():
                 row = db_cursor.fetchone()
                 while row:
-                    yield storage(dict(zip(names, row)))
+                    yield row if _rawdata else storage(dict(zip(names, row)))
                     row = db_cursor.fetchone()
             out = iterbetter(iterwrapper())
             out.__len__ = lambda: int(db_cursor.rowcount)
-            out.list = lambda: [storage(dict(zip(names, x))) \
+            out.list = lambda: [x if _rawdata else storage(dict(zip(names, x))) \
                                for x in db_cursor.fetchall()]
         else:
             out = db_cursor.rowcount
@@ -616,7 +699,7 @@ class DB:
         return out
     
     def select(self, tables, vars=None, what='*', where=None, order=None, group=None, 
-               limit=None, offset=None, _test=False): 
+               limit=None, offset=None, _test=False, _rawdata=False, _rawcur=False): 
         """
         Selects `what` from `tables` with clauses `where`, `order`, 
         `group`, `limit`, and `offset`. Uses vars to interpolate. 
@@ -633,10 +716,10 @@ class DB:
         clauses = [self.gen_clause(sql, val, vars) for sql, val in sql_clauses if val is not None]
         qout = SQLQuery.join(clauses)
         if _test: return qout
-        return self.query(qout, processed=True)
+        return self.query(qout, processed=True, _rawdata=_rawdata, _rawcur=_rawcur)
     
     def where(self, table, what='*', order=None, group=None, limit=None, 
-              offset=None, _test=False, **kwargs):
+              offset=None, _test=False, _rawdata=False, _rawcur=False, **kwargs):
         """
         Selects from `table` where keys are equal to values in `kwargs`.
         
@@ -651,6 +734,7 @@ class DB:
             where.append(k + ' = ' + sqlquote(v))
         return self.select(table, what=what, order=order, 
                group=group, limit=limit, offset=offset, _test=_test, 
+               _rawdata=_rawdata, _rawcur=_rawcur, 
                where=SQLQuery.join(where, ' AND '))
     
     def sql_clauses(self, what, tables, where, group, order, limit, offset): 
@@ -703,7 +787,7 @@ class DB:
         if values:
             _keys = SQLQuery.join(map(self.escape_key, values.keys()), ', ')
             _values = SQLQuery.join([sqlparam(v) for v in values.values()], ', ')
-            sql_query = "INSERT INTO %s " % self.escape_bl(tablename) + q(_keys) + ' VALUES ' + q(_values)
+            sql_query = "INSERT INTO %s " % self.escape_tbl(tablename) + q(_keys) + ' VALUES ' + q(_values)
         else:
             sql_query = SQLQuery("INSERT INTO %s DEFAULT VALUES" % tablename)
 
@@ -735,7 +819,7 @@ class DB:
         """
         Inserts multiple rows into `tablename`. The `values` must be a list of dictioanries, 
         one for each row to be inserted, each with the same set of keys.
-        Returns the list of ids of the inserted rows.        
+        Returns the list of ids of the inserted rows.
         Set `seqname` to the ID if it's not the default, or to `False`
         if there isn't one.
         
@@ -744,7 +828,7 @@ class DB:
             >>> values = [{"name": "foo", "email": "foo@example.com"}, {"name": "bar", "email": "bar@example.com"}]
             >>> db.multiple_insert('person', values=values, _test=True)
             <sql: "INSERT INTO person (name, email) VALUES ('foo', 'foo@example.com'), ('bar', 'bar@example.com')">
-        """        
+        """
         if not values:
             return []
             
@@ -763,7 +847,7 @@ class DB:
             if v.keys() != keys:
                 raise ValueError, 'Bad data'
 
-        sql_query = SQLQuery('INSERT INTO %s (%s) VALUES ' % (map(self.escape_tbl(tablename), ', '.join(map(self.escape_key, keys)))) 
+        sql_query = SQLQuery('INSERT INTO %s (%s) VALUES ' % (self.escape_tbl(tablename), ', '.join(map(self.escape_key, keys)))) 
 
         data = []
         for row in values:
@@ -788,7 +872,7 @@ class DB:
 
         try: 
             out = db_cursor.fetchone()[0]
-            out = range(out-len(values)+1, out+1)        
+            out = range(out-len(values)+1, out+1)
         except Exception: 
             out = None
 
@@ -856,10 +940,37 @@ class DB:
     def _process_insert_query(self, query, tablename, seqname):
         return query
 
-    def transaction(self): 
+    def transaction(self):
         """Start a transaction."""
         return Transaction(self.ctx)
-    
+
+    def _gen_table_sql(self, table):
+        return NotImplemented
+
+    def create_table(self, table):
+        db_cursor = self._db_cursor()
+
+        for sql in self._gen_table_sql(table):
+            self._db_execute(db_cursor, sql)
+
+        if not self.ctx.transactions: 
+            self.ctx.commit()
+
+        return db_cursor.rowcount
+
+    def table_count_column(self, table):
+        return NotImplemented
+
+    def table_has_column(self, table, column):
+        return NotImplemented
+
+    def table_add_column(self, table, column):
+        return NotImplemented
+
+    def table_alter_column(self, table, column):
+        return NotImplemented
+
+
 class PostgresDB(DB): 
     """Postgres driver."""
     def __init__(self, **keywords):
@@ -893,6 +1004,26 @@ class PostgresDB(DB):
         conn._con._con.set_client_encoding('UTF8')
         return conn
 
+    def _gen_table_sql(self, table):
+        sql = ["CREATE TABLE %s (" % table.name]
+        coldefs = []
+        for column in table.columns:
+            ctype = column.type
+            if column.auto_increment:
+                ctype = "SERIAL"
+            if len(table.key) == 1 and column.name in table.key:
+                ctype += " PRIMARY KEY"
+            coldefs.append("    %s %s" % (column.name, ctype))
+        if len(table.key) > 1:
+            coldefs.append("    CONSTRAINT %s_pk PRIMARY KEY (%s)"
+                           % (table.name, ','.join(table.key)))
+        sql.append(',\n'.join(coldefs) + '\n)')
+        yield '\n'.join(sql)
+        for index in table.indices:
+            unique = index.unique and 'UNIQUE' or ''
+            yield "CREATE %s INDEX %s_%s_idx ON %s (%s)" % (unique, table.name, 
+                   '_'.join(index.columns), table.name, ','.join(index.columns))
+
 class MySQLDB(DB): 
     def __init__(self, **keywords):
         import MySQLdb as db
@@ -912,6 +1043,29 @@ class MySQLDB(DB):
         
     def _process_insert_query(self, query, tablename, seqname):
         return query, SQLQuery('SELECT last_insert_id();')
+
+    def _gen_table_sql(self, table):
+        sql = ['CREATE TABLE %s (' % table.name]
+        coldefs = []
+        for column in table.columns:
+            ctype = column.type
+            if column.auto_increment:
+                ctype = 'INT UNSIGNED NOT NULL AUTO_INCREMENT'
+                # Override the column type, as a text field cannot
+                # use auto_increment.
+                column.type = 'int'
+            coldefs.append('    `%s` %s' % (column.name, ctype))
+        if len(table.key) > 0:
+            coldefs.append('    PRIMARY KEY (%s)' %
+                           self._collist(table, table.key))
+        sql.append(',\n'.join(coldefs) + '\n)')
+        yield '\n'.join(sql)
+
+        for index in table.indices:
+            unique = index.unique and 'UNIQUE' or ''
+            yield 'CREATE %s INDEX %s_%s_idx ON %s (%s);' % (unique, table.name,
+                  '_'.join(index.columns), table.name,
+                  self._collist(table, index.columns))
 
 def import_driver(drivers, preferred=None):
     """Import the first available driver or preferred driver.
@@ -935,7 +1089,7 @@ class SqliteDB(DB):
 
         self.paramstyle = db.paramstyle
         keywords['database'] = keywords.pop('db')
-        self.dbname = "sqlite"        
+        self.dbname = "sqlite"
         DB.__init__(self, db, keywords)
 
     def escape_key(slef, key):
@@ -953,6 +1107,29 @@ class SqliteDB(DB):
             # rowcount is not provided by sqlite
             del out.__len__
         return out
+
+
+    def _gen_table_sql(self, table):
+        sql = ["CREATE TABLE %s (" % table.name]
+        coldefs = []
+        for column in table.columns:
+            ctype = column.type.lower()
+            if column.auto_increment:
+                ctype = "integer PRIMARY KEY"
+            elif len(table.key) == 1 and column.name in table.key:
+                ctype += " PRIMARY KEY"
+            elif ctype == "int":
+                ctype = "integer"
+            coldefs.append("    %s %s" % (column.name, ctype))
+        if len(table.key) > 1:
+            coldefs.append("    UNIQUE (%s)" % ','.join(table.key))
+        sql.append(',\n'.join(coldefs) + '\n);')
+        yield '\n'.join(sql)
+        for index in table.indices:
+            unique = index.unique and 'UNIQUE' or ''
+            yield "CREATE %s INDEX %s_%s_idx ON %s (%s);" % (unique, table.name,
+                  '_'.join(index.columns), table.name, ','.join(index.columns))
+
 
 class FirebirdDB(DB):
     """Firebird Database.
@@ -989,7 +1166,7 @@ class FirebirdDB(DB):
 
 class MSSQLDB(DB):
     def __init__(self, **keywords):
-        import pymssql as db    
+        import pymssql as db
         if 'pw' in keywords:
             keywords['password'] = keywords.pop('pw')
         keywords['database'] = keywords.pop('db')

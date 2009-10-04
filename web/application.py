@@ -15,6 +15,7 @@ import itertools
 import os
 import re
 import types
+import time
 from exceptions import SystemExit
 
 try:
@@ -29,6 +30,53 @@ __all__ = [
     "autodelegate"
 ]
 
+"""
+application flow:
+
+A
+ 1. app.init(mapping, fvars)
+ 2. app.run(*middleware)
+    middleware is like app.processor, but it's wrapped with <B>, not <B.2.2>.
+
+
+B - handle request:
+ 1. app.load() - init the ctx
+    unicode everything in ctx except status
+ 2. app.handle_with_processors()
+    1. run pre-processor in app.processors
+        app._load()
+    2. run app.handle() <C>
+    3. run end-processor in app.processors
+        app._unload()
+ 3. result<2> will be utf8, if it's not str
+ 4. start_resp(ctx.status, ctx.headers) - return data to client
+ 5. return result of <3>
+ 6. app._cleanup()
+    destory the thread dict
+    ctx can not used
+
+
+C - The mapping(urlp, what) analyze:
+if what is:
+ 1. None - raise notfound
+ 2. application
+    if ctx.path.startswith(urlp), the ctx will be change and 
+        treat as function as <B.2>
+ 3. class
+ 4. basetring - will changed by `re.sub(urlp, what, ctx.path)`,
+    1. if startswith 'redirect ', will be redirect to the rest string, 
+        raise redirect
+    2. if contains '.', will be import as module's class
+    3. else, will be get class from app.fvars by attr name
+ 5. function like
+ 
+ 6. all class <3, 4.2, 4.3> do - getattr(class, web.ctx.method)() or raise nomethod
+ 7. all function <2, 5> do - function()
+
+
+D - app.request()
+ prepare the env and call <B>
+"""
 class application:
     """
     Application to delegate requests based on path.
@@ -45,6 +93,7 @@ class application:
         if autoreload is None:
             autoreload = web.config.get('debug', False)
         self.mapping = mapping
+        self.mapping_add_later = tuple()
         self.fvars = fvars
         self.processors = []
         
@@ -76,9 +125,16 @@ class application:
                 """loadhook to reload mapping and fvars."""
                 mod = __import__(module_name)
                 mapping = getattr(mod, mapping_name, None)
+                
                 if mapping:
                     self.fvars = mod.__dict__
+                    # fixed map in add_mapping
+
+                    if self.mapping_add_later:
+                        mapping += self.mapping_add_later
+
                     self.mapping = mapping
+
 
             self.add_processor(loadhook(Reloader()))
             if mapping_name and module_name:
@@ -90,7 +146,7 @@ class application:
                     __import__(main_module_name())
                 except ImportError:
                     pass
-                    
+
     def _load(self):
         web.ctx.app_stack.append(self)
         
@@ -118,6 +174,7 @@ class application:
             del t._d
     
     def add_mapping(self, pattern, classname):
+        self.mapping_add_later += (pattern, classname)
         self.mapping += (pattern, classname)
         
     def add_processor(self, processor):
@@ -250,7 +307,7 @@ class application:
         
         # processors must be applied in the resvere order. (??)
         return process(self.processors)
-                        
+    
     def wsgifunc(self, *middleware):
         """Returns a WSGI-compatible function for this application."""
         def peep(iterator):
@@ -270,6 +327,7 @@ class application:
         def is_generator(x): return x and hasattr(x, 'next')
         
         def wsgi(env, start_resp):
+            stime = time.time()
             self.load(env)
             try:
                 # allow uppercase methods only
@@ -279,7 +337,7 @@ class application:
                 result = self.handle_with_processors()
                 if is_generator(result):
                     result = peep(result)
-                else:
+                elif not hasattr(result, '__iter__'):
                     result = [result]
             except web.HTTPError, e:
                 result = [e.data]
@@ -287,6 +345,8 @@ class application:
             result = web.utf8(iter(result))
 
             status, headers = web.ctx.status, web.ctx.headers
+            web.header('X-TIME', time.time() - stime)
+            del stime
             start_resp(status, headers)
             
             def cleanup():
@@ -345,7 +405,7 @@ class application:
         else:
             ctx.protocol = 'http'
         ctx.homedomain = ctx.protocol + '://' + env.get('HTTP_HOST', '[unknown]')
-        ctx.homepath = os.environ.get('REAL_SCRIPT_NAME', env.get('SCRIPT_NAME', ''))
+        ctx.homepath = env.get('REAL_SCRIPT_NAME', env.get('SCRIPT_NAME', ''))
         ctx.home = ctx.homedomain + ctx.homepath
         #@@ home is changed when the request is handled to a sub-application.
         #@@ but the real home is required for doing absolute redirects.
