@@ -49,7 +49,14 @@ class UnknownParamstyle(Exception):
     (currently supported: qmark, numeric, format, pyformat)
     """
     pass
-    
+
+class NotImplementedOp(Exception):
+    def __init__(self, op):
+        Exception.__init__(self)
+        self.op = op
+    def __str__(self):
+        return "not implement oprate <%s>"%self.op
+
 class SQLParam:
     """
     Parameter in SQLQuery.
@@ -563,7 +570,7 @@ class DB:
 
     def _op_get(self, op):
         def just_lr(op):
-            return lambda k,v: '%s %s %s'%(k, op, sqlparam(v))
+            return lambda k,v: SQLQuery([k, ' %s '%op, sqlparam(v)])
 
         return {
             'eq': just_lr('='),
@@ -572,7 +579,8 @@ class DB:
             'gt': just_lr('>'),
             'ge': just_lr('>='),
             'ne': just_lr('<>'),
-            'contains': just_lr('like'),
+            'contains': lambda k,v: SQLQuery([k, ' like ', sqlparam('%' + v + '%')]),
+            'null': lambda k,v: SQLQuery([k, ' IS NULL']),
         }.get(op)
 
     def _op_expand_where(self, d, grouping='AND', op_mode=1):
@@ -585,6 +593,7 @@ class DB:
             <sql: "(NOT (id >= 3)) AND ((name like '%kindy%') OR (name is NULL))">
 
         the value can be str or list, 
+            when op_mode=0, the list[0] whill be use;
             when op_mode=1, the list[0] whill be use;
             when op_mode=2, the [str] whill be use;
                 the value grouping by 'OR' default, 
@@ -593,21 +602,27 @@ class DB:
         
         def _expand_op(op, k, v):
             inv = False
-            if op[:1] == '!':
-                inv = True
-                op = op[1:]
-            if not op: op = 'eq'
             
-            op_ = self._op_get(op)
+            op_ = self._op_get(op or 'eq')
             if not op_:
-                return NotImplemented
+                if op[:1] == '!':
+                    inv = True
+                    op = op[1:]
+                    op_ = self._op_get(op or 'eq')
+            if not op_:
+                raise NotImplementedOp, op
             
             sql = op_(k, v)
             
             if inv:
-                sql = 'NOT (%s)'%sql
+                sql = 'NOT (' + sql + ')'
             
             return sql
+        
+        def expand_op_0(k, v):
+            if type(v) is list: v = v[0]
+            
+            return SQLQuery([k, ' = ', sqlparam(v)])
         
         def expand_op_1(k, v):
             if type(v) is list: v = v[0]
@@ -616,7 +631,8 @@ class DB:
             return _expand_op(op, k, v)
 
         def expand_op_2(k, v):
-            if type(v) in (str, unicode): v = [v]
+            if isinstance(v, basestring): v = [v]
+            # type(v) in (str, unicode)
             g = 'OR'
             w = []
             
@@ -629,15 +645,18 @@ class DB:
                 
                 w.append(_expand_op(op, k, v))
             
-            w = ['(%s)'%i for i in w if i]
+            w = map(None, w)
+            if len(w) > 1:
+                w = ['('+i+')' for i in w]
+            
             return SQLQuery.join(w, ' %s '%g)
         
-        expand_op = dict(enumerate([None, expand_op_1, expand_op_2])).get(op_mode)
+        expand_op = dict(enumerate([expand_op_0, expand_op_1, expand_op_2])).get(op_mode)
         if not expand_op:
             return NotImplemented
         
         w = [expand_op(k, v) for k, v in d.items() if type(v) in (str, unicode, list)]
-        w = ['(%s)'%i for i in w if i]
+        w = ['('+i+')' for i in w if i]
         return SQLQuery.join(w, ' %s '%grouping)
 
     def _where(self, where, vars):
@@ -691,12 +710,83 @@ class DB:
             out.__len__ = lambda: int(db_cursor.rowcount)
             out.list = lambda: [x if _rawdata else storage(dict(zip(names, x))) \
                                for x in db_cursor.fetchall()]
+            if _rawdata:
+                out.names = names
         else:
             out = db_cursor.rowcount
         
         if not self.ctx.transactions: 
             self.ctx.commit()
+        
         return out
+    
+    def select_with_op(self, tables, query, op_mode=0, vars=None, _test=False, _rawdata=False, _rawcur=False):
+        """
+        * _cols
+        * _order_by
+        * _group_by
+        * _limit
+        
+        * _test
+        * _rawdata
+        """
+        
+        def _process_list(s):
+            s = s.split(',')
+            ss = []
+            for i in s:
+                if not i: continue
+                
+                if i[0] == '!' and i[1:]:
+                    ss.append('%s DESC'%i[1:])
+                else:
+                    ss.append(i)
+            return SQLQuery.join(ss, ', ')
+                
+        
+        if vars is None: vars = {}
+        
+        what = '*'
+        order=group=limit=offset=None
+        
+        if '_cols' in query:
+            what = query.pop('_cols')[0]
+        if '_test' in query:
+            _test = query.pop('_test')[0]
+        if '_rawdata' in query:
+            _rawdata = query.pop('_rawdata')[0]
+        if '_order_by' in query:
+            order = _process_list(query.pop('_order_by')[0])
+        if '_group_by' in query:
+            group = query.pop('_group_by')[0]
+        if '_limit' in query:
+            _limit = query.pop('_limit')[0]
+            try:
+                if ',' in _limit:
+                    offset, limit = map(int, _limit.split(',', 1))
+                else:
+                    limit = int(_limit)
+            except ValueError, e:
+                return NotImplemented
+        
+        where = {}
+        for k in query.keys():
+            if k and k[0] != '_':
+                where[k] = query.pop(k)
+        
+        if where:
+            where = self._op_expand_where(where, op_mode=op_mode)
+        
+        if not where:
+            where = None
+        
+        sql_clauses = self.sql_clauses(what, tables, where, group, order, limit, offset)
+        clauses = [self.gen_clause(sql, val, vars) for sql, val in sql_clauses if val is not None]
+        sql = SQLQuery.join(clauses)
+        if _test: return sql
+        
+        return self.query(sql, processed=True, _rawdata=_rawdata, _rawcur=_rawcur)
+    
     
     def select(self, tables, vars=None, what='*', where=None, order=None, group=None, 
                limit=None, offset=None, _test=False, _rawdata=False, _rawcur=False): 
@@ -1018,11 +1108,11 @@ class PostgresDB(DB):
             coldefs.append("    CONSTRAINT %s_pk PRIMARY KEY (%s)"
                            % (table.name, ','.join(table.key)))
         sql.append(',\n'.join(coldefs) + '\n)')
-        yield '\n'.join(sql)
+        yield SQLQuery('\n'.join(sql))
         for index in table.indices:
             unique = index.unique and 'UNIQUE' or ''
-            yield "CREATE %s INDEX %s_%s_idx ON %s (%s)" % (unique, table.name, 
-                   '_'.join(index.columns), table.name, ','.join(index.columns))
+            yield SQLQuery("CREATE %s INDEX %s_%s_idx ON %s (%s)" % (unique, table.name, 
+                   '_'.join(index.columns), table.name, ','.join(index.columns)))
 
 class MySQLDB(DB): 
     def __init__(self, **keywords):
@@ -1045,6 +1135,35 @@ class MySQLDB(DB):
         return query, SQLQuery('SELECT last_insert_id();')
 
     def _gen_table_sql(self, table):
+        def _collist(table, columns):
+            """Take a list of columns and impose limits on each so that indexing
+            works properly.
+
+            Some Versions of MySQL limit each index prefix to 500 bytes total, with
+            a max of 255 bytes per column.
+            """
+            cols = []
+            limit = 333 / len(columns)
+            if limit > 255:
+                limit = 255
+            for c in columns:
+                name = '`%s`' % c
+                table_col = filter((lambda x: x.name == c), table.columns)
+                if len(table_col) == 1 and table_col[0].type.lower() == 'text':
+                    # if name == '`rev`':
+                    #     name += '(20)'
+                    # elif name == '`path`':
+                    #     name += '(255)'
+                    # elif name == '`change_type`':
+                    #     name += '(2)'
+                    # else:
+                    #     name += '(%s)' % limit
+                    name += '(%s)' % limit
+                # For non-text columns, we simply throw away the extra bytes.
+                # That could certainly be optimized better, but for now let's KISS.
+                cols.append(name)
+            return ','.join(cols)
+        
         sql = ['CREATE TABLE %s (' % table.name]
         coldefs = []
         for column in table.columns:
@@ -1056,16 +1175,16 @@ class MySQLDB(DB):
                 column.type = 'int'
             coldefs.append('    `%s` %s' % (column.name, ctype))
         if len(table.key) > 0:
-            coldefs.append('    PRIMARY KEY (%s)' %
-                           self._collist(table, table.key))
+            coldefs.append('    PRIMARY KEY (%s)'%_collist(table, table.key))
         sql.append(',\n'.join(coldefs) + '\n)')
-        yield '\n'.join(sql)
+        yield SQLQuery('\n'.join(sql))
 
         for index in table.indices:
             unique = index.unique and 'UNIQUE' or ''
-            yield 'CREATE %s INDEX %s_%s_idx ON %s (%s);' % (unique, table.name,
-                  '_'.join(index.columns), table.name,
-                  self._collist(table, index.columns))
+            yield SQLQuery('CREATE %s INDEX %s_%s_idx ON %s (%s);'%\
+                            (unique, table.name,
+                            '_'.join(index.columns), table.name,
+                            _collist(table, index.columns)))
 
 def import_driver(drivers, preferred=None):
     """Import the first available driver or preferred driver.
@@ -1124,11 +1243,13 @@ class SqliteDB(DB):
         if len(table.key) > 1:
             coldefs.append("    UNIQUE (%s)" % ','.join(table.key))
         sql.append(',\n'.join(coldefs) + '\n);')
-        yield '\n'.join(sql)
+        yield SQLQuery('\n'.join(sql))
+        
         for index in table.indices:
             unique = index.unique and 'UNIQUE' or ''
-            yield "CREATE %s INDEX %s_%s_idx ON %s (%s);" % (unique, table.name,
-                  '_'.join(index.columns), table.name, ','.join(index.columns))
+            yield SQLQuery("CREATE %s INDEX %s_%s_idx ON %s (%s);"%\
+                            (unique, table.name, '_'.join(index.columns), 
+                            table.name, ','.join(index.columns)))
 
 
 class FirebirdDB(DB):

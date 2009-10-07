@@ -46,7 +46,7 @@ B - handle request:
     1. run pre-processor in app.processors
         app._load()
     2. run app.handle() <C>
-    3. run end-processor in app.processors
+    3. run post-processor in app.processors
         app._unload()
  3. result<2> will be utf8, if it's not str
  4. start_resp(ctx.status, ctx.headers) - return data to client
@@ -322,7 +322,7 @@ class application:
             except StopIteration:
                 firstchunk = ''
 
-            return itertools.chain([firstchunk], iterator)    
+            return itertools.chain([firstchunk], iterator)
                                 
         def is_generator(x): return x and hasattr(x, 'next')
         
@@ -471,7 +471,7 @@ class application:
                 cls = fvars[f]
             return handle_class(cls)
         elif hasattr(f, '__call__'):
-            return f()
+            return f(*args)
         else:
             return web.notfound()
 

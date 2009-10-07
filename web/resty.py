@@ -11,8 +11,9 @@ import cgi #, sys, os, threading, urllib, urlparse
 # Table, Column, Index from trac <trac.edgewall.org>
 from trac.db.schema import Table, Column, Index
 
-try: from simplejson import dumps as json_encode, loads as json_decode
-except ImportError: pass
+from simplejson import dumps as json_encode, loads as json_decode
+from yaml import dump as _yaml_encode, load as yaml_decode
+yaml_encode = lambda d, default_flow_style=False: _yaml_encode(d, default_flow_style=default_flow_style)
 import net, utils, webapi as web
 
 config = web.config
@@ -32,9 +33,11 @@ def register_resty(app, url=None):
     # web.debug('+'*10, register_resty, url, urlp)
     app.add_mapping(urlp, http_handler)
 
-debug = web.config.get('debug')
+debug = config.get('debug', False)
 
-def json_it(fn):
+get_encoder = lambda t: {'j': json_encode, 'json': json_encode, 'y': yaml_encode, 'yaml': yaml_encode}.get(t, json_encode)
+
+def output_it(fn):
     def f(*args, **kw):
         x = fn(*args, **kw)
         web.header('Content-Type', 'text/plain; charset=UTF-8')
@@ -43,7 +46,7 @@ def json_it(fn):
                  and ((hasattr(x, '__iter__') or hasattr(x, 'next'))):
                 x = list(x)
 
-            yield json_encode(x)
+            yield get_encoder(web.ctx._out_format)(x)
         except:
             yield 'not json :(\n'
             yield x
@@ -56,59 +59,52 @@ class RestyError(Exception):
         self.msg = msg
 
 
-class http_handler(object):
-    # def __init__(self):
-    #     pass
-
-    @json_it
-    def process(self, url):
-        # web.debug('='*10)
-
-        try:
-            ctx = web.ctx
-            
-            if not url:
-                raise RestyError('the url <%s> is not valid'%ctx.path)
-            
-            urlbits = url.split('/', 4)
-
-            if (not urlbits) or ('' in urlbits):
-                raise RestyError('the url <%s> is not valid'%ctx.path)
-            
-            query = cgi.parse_qs(ctx.env.get('QUERY_STRING', ''))\
-                if ctx.query else {}
-
-            if '_method' in query:
-                ctx.method = query.pop('_method')[0]
-
-            if ctx.method not in ('POST', 'GET', 'PUT', 'DELETE', 'HEAD'):
-                raise RestyError('the method [%s] not allowed'%ctx.method)
-
-            _callback = query.pop('_callback')[0]\
-                if '_callback' in query else None
-
-            cls_ = handlers.get(urlbits[0])
-
-            hdl = cls_(ctx, query, urlbits, web.config.get('resty_db'))
-
-            return hdl.run()
-
-        except RestyError, ex:
-            return { 'success': False, 'error': ex.msg }
+@output_it
+def http_handler(url):
+    try:
+        ctx = web.ctx
         
-        except:
-            if debug:
-                import debugerror
-                raise debugerror.debugerror()
-            else:
-                return { 'success': False, 'error': 'unknow' }
+        if not url:
+            raise RestyError('the url <%s> is not valid'%ctx.path)
+        
+        urlbits = url.strip('/').split('/', 4)
+        
+        if (not urlbits) or ('' in urlbits):
+            raise RestyError('the url <%s> is not valid'%ctx.path)
+        
+        lstBit = urlbits[-1]
+        if lstBit and '.' in lstBit:
+            urlbits[-1], ctx._out_format = lstBit.rsplit('.', 2)
+        else:
+            ctx._out_format = 'j'
 
+        query = cgi.parse_qs(ctx.env.get('QUERY_STRING', ''))\
+            if ctx.query else {}
 
-    GET = process
-    POST = process
-    PUT = process
-    DELETE = process
-    HEAD = process
+        if '_method' in query:
+            ctx.method = query.pop('_method')[0]
+
+        if ctx.method not in ('POST', 'GET', 'PUT', 'DELETE', 'HEAD'):
+            raise RestyError('the method [%s] not allowed'%ctx.method)
+
+        _callback = query.pop('_callback')[0]\
+            if '_callback' in query else None
+
+        cls_ = handlers.get(urlbits[0])
+
+        hdl = cls_(ctx, query, urlbits, web.config.get('resty_db'))
+
+        return hdl.run()
+
+    except RestyError, ex:
+        return { 'success': False, 'error': ex.msg }
+    
+    except:
+        if debug:
+            import debugerror
+            raise debugerror.debugerror()
+        else:
+            return { 'success': False, 'error': 'unknow' }
 
 
 handlers = {}
@@ -127,10 +123,11 @@ class Handler_model(object):
             else:
                 _data = web.data()
             if _data:
-                self.data = json_decode(_data)
+                try: self.data = json_decode(_data)
+                except: raise RestyError('data is invalid')
                 del _data
             else:
-                self.data = None
+                raise RestyError('no data!')
         else:
             self.data = None
 
@@ -187,22 +184,15 @@ class Handler_model(object):
         model = self.model
         op_mode = self.op_mode
 
-        sql_what = '*'
-        sql_where = []
         if urlbits[-2] != '~' and urlbits[-1] != '~':
-            sql_where.append(tuple(urlbits[-2:]))
+            query.setdefault(urlbits[-2], []).insert(0, urlbits[-1])
 
-        if op_mode:
-            sql_where = process_sql_op(sql_where, op_mode)
-        else:
-            sql_where = ['%s=%s'%s for s in sql_where if s]
+        return db.select_with_op(model, query, op_mode=op_mode)
 
-        sql_where = ' AND '.join(['(%s)'%s for s in sql_where])
-
-        return db.select(model, what=sql_what, where=sql_where or None, _test=True if '_t' in query else False)
 
     def POST_model_row(self):
         data = self.data
+        query = self.query
 
         if type(data) is dict:
             data = [data]
@@ -210,25 +200,117 @@ class Handler_model(object):
         if type(data) is not list:
             raise RestyError('data <%s> must be list or dict'%json_encode(data))
 
+        _test = False
+        if '_test' in query:
+            _test = query.pop('_test')[0]
+        
+        data_ = []
         for idx, d in enumerate(data):
+            d = dict([(str(k),v) for k,v in d.items()])
+            
             if 'id' in d:
                 del d['id']
-            if not d:
-                del data[idx]
+            if d:
+                data_.append(d)
+        del data
+        
+        if not data_:
+            raise RestyError('data is invalid')
 
-        return self.db.multiple_insert(self.model, data, seqname='id', _test=True if '_t' in self.query else False)
+        return self.db.multiple_insert(self.model, data_, seqname='id', _test=_test)
 
 
     def PUT_model_row(self):
-        pass
+        data = self.data
+        query = self.query
+        db = self.db
+        urlbits = self.urlbits
+        
+        if urlbits[-2] != '~' and urlbits[-1] != '~':
+            query.setdefault(urlbits[-2], []).insert(0, urlbits[-1])
+
+        where = {}
+        for k in query.keys():
+            if k and k[0] != '_':
+                where[k] = query.pop(k)
+        if where:
+            where = db._op_expand_where(where, op_mode=self.op_mode)
+        if not where:
+            raise RestyError('you must give the where')
+
+        if type(data) is list:
+            data = data[0]
+
+        if type(data) is not dict:
+            raise RestyError('data <%s> must be dict or 1 item list'%json_encode(data))
+
+        _test = False
+        if '_test' in query:
+            _test = query.pop('_test')[0]
+
+        data = dict([(str(k),v) for k,v in data.items() if str(k)!='id'])
+        
+        if not data:
+            raise RestyError('data is invalid')
+
+        return db.update(self.model, where=where, _test=_test, **data)
+
 
     def DELETE_model_row(self):
-        pass
+        query = self.query
+        db = self.db
+        urlbits = self.urlbits
+        
+        if urlbits[-2] != '~' and urlbits[-1] != '~':
+            query.setdefault(urlbits[-2], []).insert(0, urlbits[-1])
+
+        where = {}
+        for k in query.keys():
+            if k and k[0] != '_':
+                where[k] = query.pop(k)
+        if where:
+            where = db._op_expand_where(where, op_mode=self.op_mode)
+        if not where:
+            raise RestyError('you must give the where')
+
+        _test = False
+        if '_test' in query:
+            _test = query.pop('_test')[0]
+
+        return db.delete(self.model, where=where, _test=_test)
 
 
 handlers['model'] = Handler_model
 
 
+"""
+ok(exp, name=None)
+is(got, expected, name=None)
+isnt(got, expected, name=None)
+like(got, expected, name=None) use expect as regex
+unlike(got, expected, name=None)
+cmp_ok(got, op, expected, name=None);
+can_ok()
+    ~ hasattr_ok()
+isa_ok()
+    ~ isinstance_ok()
+new_ok()
+subtest(function, name)
+    function contain the tests
+pass ~ ok(1)
+fail ~ ok(0)
+use_ok()
+    ~ import_ok(package, module=None, name=None)
+is_deeply(got, expected, name=None) compare by walk through
+diag(*msgs)
+? note(*msgs)
+explain(obj)
+    ~ just like repr
+
+if XX: skip(why, how_many)
+todo
+todo_skip
+"""
 
 """
 == API

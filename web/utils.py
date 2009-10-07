@@ -899,10 +899,14 @@ class Profile:
         stats.print_stats(40)
         stats.print_callers()
 
-        x =  '\n\ntook '+ str(stime) + ' seconds\n'
-        x += out.getvalue()
-
-        return result, x
+        def xx():
+            yield '\n\ntook '+ str(stime) + ' seconds\n'
+            yield out.getvalue()
+        
+        if result and not(hasattr(result, 'next') or hasattr(result, '__iter__')):
+            result = [result]
+        
+        return itertools.chain(result, xx())
 
 profile = Profile
 
