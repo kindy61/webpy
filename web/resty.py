@@ -67,14 +67,14 @@ def http_handler(url):
         if not url:
             raise RestyError('the url <%s> is not valid'%ctx.path)
         
-        urlbits = url.strip('/').split('/', 4)
+        urlbits = url.strip('/').split('/', 3)
         
         if (not urlbits) or ('' in urlbits):
             raise RestyError('the url <%s> is not valid'%ctx.path)
         
         lstBit = urlbits[-1]
         if lstBit and '.' in lstBit:
-            urlbits[-1], ctx._out_format = lstBit.rsplit('.', 2)
+            urlbits[-1], ctx._out_format = lstBit.rsplit('.', 1)
         else:
             ctx._out_format = 'j'
 
@@ -91,6 +91,9 @@ def http_handler(url):
             if '_callback' in query else None
 
         cls_ = handlers.get(urlbits[0])
+        
+        if not cls_:
+            raise RestyError('module <%s> not exist'%urlbits[0])
 
         hdl = cls_(ctx, query, urlbits, web.config.get('resty_db'))
 
