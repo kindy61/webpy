@@ -9,11 +9,11 @@ __all__ = [
 
 import cgi #, sys, os, threading, urllib, urlparse
 # Table, Column, Index from trac <trac.edgewall.org>
-from trac.db.schema import Table, Column, Index
+# from schema import *
 
 from simplejson import dumps as json_encode, loads as json_decode
 from yaml import dump as _yaml_encode, load as yaml_decode
-yaml_encode = lambda d, default_flow_style=False: _yaml_encode(d, default_flow_style=default_flow_style)
+yaml_encode = lambda d, x=False: _yaml_encode(d, default_flow_style=x)
 import net, utils, webapi as web
 
 config = web.config
@@ -25,7 +25,30 @@ config = web.config
 
 
 def register_resty(app, url=None):
-    """register the resty on an application"""
+    """
+import web
+
+def hello():
+    return "hello"
+
+urls = ("/hello", hello)
+app = web.application(urls, globals())
+db = web.database(dbn='sqlite', db='resty_test.db')
+db.create_table(web.Table('pp')[web.Column('id', auto_increment=True), web.Column('title')])
+
+web.config.resty_db = db
+web.register_resty(app)
+
+app.request("/=/model/pp/~/~?_method=POST&_data={\"title\":\"abc\"}").data
+app.request("/=/model/pp/id/1").data
+
+app.request("/=/model/pp/~/~?_method=POST&_data=[{\"title\":\"abc2\"},{\"title\":\"abc3\"}]").data
+app.request("/=/model/pp/id/gt:1?_op=1").data
+
+app.request("/=/model/pp/id/gt:1?_op=1&_method=DELETE").data
+
+app.request("/=/model/pp/~/~",method='POST',data="[{\"title\":\"abc2\"},{\"title\":\"abc3\"}]").data
+    """
     if url is None:
         url = '='
 

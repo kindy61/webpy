@@ -9,6 +9,7 @@ __all__ = [
   "SQLQuery", "SQLParam", "sqlparam",
   "SQLLiteral", "sqlliteral",
   "database", 'DB',
+  "Table", 'Column', 'Index',
 ]
 
 import time
@@ -18,6 +19,7 @@ except ImportError:
     datetime = None
 
 from utils import threadeddict, storage, iters, iterbetter
+from schema import *
 
 try:
     # db module can work independent of web.py
@@ -626,6 +628,9 @@ class DB:
         
         def expand_op_1(k, v):
             if type(v) is list: v = v[0]
+            if ':' not in v:
+                raise Exception, 'value must contains <:>'
+            
             op, v = v.split(':', 1)
 
             return _expand_op(op, k, v)
@@ -638,6 +643,9 @@ class DB:
             
             vv = v
             for v in vv:
+                if ':' not in v:
+                    raise Exception, 'value must contains <:>'
+                
                 op, v = v.split(':', 1)
                 if op == '_grouping':
                     g = v.strip()
@@ -1035,9 +1043,10 @@ class DB:
         return Transaction(self.ctx)
 
     def _gen_table_sql(self, table):
-        return NotImplemented
+        raise NotImplemented
 
     def create_table(self, table):
+        """table is schema.Table"""
         db_cursor = self._db_cursor()
 
         for sql in self._gen_table_sql(table):
