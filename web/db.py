@@ -581,7 +581,7 @@ class DB:
             'gt': just_lr('>'),
             'ge': just_lr('>='),
             'ne': just_lr('<>'),
-            'contains': lambda k,v: SQLQuery([k, ' like ', sqlparam('%' + v + '%')]),
+            'contains': lambda k,v: SQLQuery([k, ' LIKE ', sqlparam('%' + v + '%')]),
             'null': lambda k,v: SQLQuery([k, ' IS NULL']),
         }.get(op)
 
@@ -664,7 +664,9 @@ class DB:
             return NotImplemented
         
         w = [expand_op(k, v) for k, v in d.items() if type(v) in (str, unicode, list)]
-        w = ['('+i+')' for i in w if i]
+        w = map(None, w)
+        if len(w) > 1:
+            w = ['('+i+')' for i in w]
         return SQLQuery.join(w, ' %s '%grouping)
 
     def _where(self, where, vars):
