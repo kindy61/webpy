@@ -464,16 +464,23 @@ class application:
                 raise web.redirect(url)
             elif '.' in f:
                 x = f.split('.')
+                if not len(x) == len(filter(None, x)):
+                    raise web.internalerror()
                 mod, cls = '.'.join(x[:-1]), x[-1]
-                mod = __import__(mod, globals(), locals(), [""])
+                try:
+                    mod = __import__(mod, globals(), locals(), [""])
+                except: raise web.notfound()
                 cls = getattr(mod, cls)
             else:
-                cls = fvars[f]
-            return handle_class(cls)
+                cls = fvars.get(f)
+            if cls:
+                return handle_class(cls)
+            else:
+                raise web.notfound()
         elif hasattr(f, '__call__'):
             return f(*args)
         else:
-            return web.notfound()
+            raise web.notfound()
 
     def _match(self, mapping, value):
         for pat, what in utils.group(mapping, 2):
