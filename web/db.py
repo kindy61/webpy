@@ -18,7 +18,11 @@ try:
 except ImportError:
     datetime = None
 
-from utils import threadeddict, storage, iters, iterbetter
+try: set
+except NameError:
+    from sets import Set as set
+    
+from utils import threadeddict, storage, iters, iterbetter, safestr, safeunicode
 from schema import *
 
 try:
@@ -111,7 +115,7 @@ class SQLQuery:
     """
     # tested in sqlquote's docstring
     def __init__(self, items=[]):
-        """Creates a new SQLQuery.
+        r"""Creates a new SQLQuery.
         
             >>> SQLQuery("x")
             <sql: 'x'>
@@ -130,7 +134,7 @@ class SQLQuery:
         elif isinstance(items, SQLQuery):
             self.items = list(items.items)
         else:
-            self.items = [str(items)]
+            self.items = [items]
             
         # Take care of SQLLiterals
         for i, item in enumerate(self.items):
@@ -180,7 +184,7 @@ class SQLQuery:
         for x in self.items:
             if isinstance(x, SQLParam):
                 x = x.get_marker(paramstyle)
-            s += x
+            s += safestr(x)
         return s
     
     def values(self):
@@ -209,12 +213,18 @@ class SQLQuery:
         return q
     
     join = staticmethod(join)
-
-    def __str__(self):
+    
+    def _str(self):
         try:
-            return self.query() % tuple([sqlify(x) for x in self.values()])
+            return self.query() % tuple([sqlify(x) for x in self.values()])            
         except (ValueError, TypeError):
             return self.query()
+        
+    def __str__(self):
+        return safestr(self._str())
+        
+    def __unicode__(self):
+        return safeunicode(self._str())
 
     def __repr__(self):
         return '<sql: %s>' % repr(str(self))
@@ -1077,24 +1087,41 @@ class PostgresDB(DB):
     """Postgres driver."""
     def __init__(self, **keywords):
         if 'pw' in keywords:
-            keywords['password'] = keywords['pw']
-            del keywords['pw']
+            keywords['password'] = keywords.pop('pw')
             
         db_module = import_driver(["psycopg2", "psycopg", "pgdb"], preferred=keywords.pop('driver', None))
         if db_module.__name__ == "psycopg2":
             import psycopg2.extensions
             psycopg2.extensions.register_type(psycopg2.extensions.UNICODE)
 
-        keywords['database'] = keywords.pop('db')
+        # if db is not provided postgres driver will take it from PGDATABASE environment variable
+        if 'db' in keywords:
+            keywords['database'] = keywords.pop('db')
+        
         self.dbname = "postgres"
         self.paramstyle = db_module.paramstyle
         DB.__init__(self, db_module, keywords)
         self.supports_multiple_insert = True
+        self._sequences = None
         
     def _process_insert_query(self, query, tablename, seqname):
-        if seqname is None: 
+        if seqname is None:
+            # when seqname is not provided guess the seqname and make sure it exists
             seqname = tablename + "_id_seq"
-        return query + "; SELECT currval('%s')" % seqname
+            if seqname not in self._get_all_sequences():
+                seqname = None
+        
+        if seqname:
+            query += "; SELECT currval('%s')" % seqname
+            
+        return query
+    
+    def _get_all_sequences(self):
+        """Query postgres to find names of all sequences used in this database."""
+        if self._sequences is None:
+            q = "SELECT c.relname FROM pg_class c WHERE c.relkind = 'S'"
+            self._sequences = set([c.relname for c in self.query(q)])
+        return self._sequences
 
     def _connect(self, keywords):
         conn = DB._connect(self, keywords)
@@ -1236,7 +1263,10 @@ class SqliteDB(DB):
         out = DB.query(self, *a, **kw)
         if isinstance(out, iterbetter):
             # rowcount is not provided by sqlite
+            def _nonzero(): 
+                raise self.db_module.NotSupportedError("rowcount is not supported by sqlite")
             del out.__len__
+            out.__nonzero__ = _nonzero
         return out
 
 

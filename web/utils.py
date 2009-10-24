@@ -128,7 +128,9 @@ def storify(mapping, *requireds, **defaults):
         else: return s
         
     def getvalue(x):
-        if hasattr(x, 'value'):
+        if hasattr(x, 'file') and hasattr(x, 'value'):
+            return x.value
+        elif hasattr(x, 'value'):
             return unicodify(x.value)
         else:
             return unicodify(x)
@@ -541,6 +543,10 @@ class IterBetter:
             return self.i.next()
         except StopIteration: 
             raise IndexError, str(i)
+            
+    def __nonzero__(self):
+        return len(self) != 0
+        
 iterbetter = IterBetter
 
 def dictreverse(mapping):
@@ -881,9 +887,11 @@ class Profile:
     def __init__(self, func): 
         self.func = func
     def __call__(self, *args): ##, **kw):   kw unused
-        import hotshot, hotshot.stats, tempfile ##, time already imported
-        temp = tempfile.NamedTemporaryFile()
-        prof = hotshot.Profile(temp.name)
+        import hotshot, hotshot.stats, os, tempfile ##, time already imported
+        f, filename = tempfile.mkstemp()
+        os.close(f)
+        
+        prof = hotshot.Profile(filename)
 
         stime = time.time()
         result = prof.runcall(self.func, *args)
@@ -892,7 +900,7 @@ class Profile:
 
         import cStringIO
         out = cStringIO.StringIO()
-        stats = hotshot.stats.load(temp.name)
+        stats = hotshot.stats.load(filename)
         stats.stream = out
         stats.strip_dirs()
         stats.sort_stats('time', 'calls')
@@ -903,6 +911,12 @@ class Profile:
             yield '\n\ntook '+ str(stime) + ' seconds\n'
             yield out.getvalue()
         
+        # remove the tempfile
+        try:
+            os.remove(filename)
+        except IOError:
+            pass
+
         if result and not(hasattr(result, 'next') or hasattr(result, '__iter__')):
             result = [result]
         
