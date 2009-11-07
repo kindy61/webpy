@@ -1262,11 +1262,7 @@ class SqliteDB(DB):
     def query(self, *a, **kw):
         out = DB.query(self, *a, **kw)
         if isinstance(out, iterbetter):
-            # rowcount is not provided by sqlite
-            def _nonzero(): 
-                raise self.db_module.NotSupportedError("rowcount is not supported by sqlite")
             del out.__len__
-            out.__nonzero__ = _nonzero
         return out
 
 

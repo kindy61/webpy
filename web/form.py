@@ -177,7 +177,7 @@ class AttributeList(dict):
         return AttributeList(self)
         
     def __str__(self):
-        return " ".join('%s="%s"' % (k, net.websafe(v)) for k, v in self.items())
+        return " ".join(['%s="%s"' % (k, net.websafe(v)) for k, v in self.items()])
         
     def __repr__(self):
         return '<attrs: %s>' % repr(str(self))
@@ -305,6 +305,13 @@ class Checkbox(Input):
         return self.checked
 
 class Button(Input):
+    """HTML Button.
+    
+    >>> Button("save").render()
+    '<button id="save" name="save">save</button>'
+    >>> Button("action", value="save", html="<b>Save Changes</b>").render()
+    '<button id="action" value="save" name="action"><b>Save Changes</b></button>'
+    """
     def __init__(self, name, *validators, **attrs):
         super(Button, self).__init__(name, *validators, **attrs)
         self.description = ""
@@ -312,7 +319,10 @@ class Button(Input):
     def render(self):
         attrs = self.attrs.copy()
         attrs['name'] = self.name
-        return '<button %s>%s</button>' % (attrs, self.description)
+        if self.value is not None:
+            attrs['value'] = self.value
+        html = attrs.pop('html', None) or net.websafe(self.name)
+        return '<button %s>%s</button>' % (attrs, html)
 
 class Hidden(Input):
     """Hidden Input.
