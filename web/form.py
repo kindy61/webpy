@@ -164,7 +164,8 @@ class Input(object):
         else: return ""
         
     def addatts(self):
-        return str(self.attrs)
+        # add leading space for backward-compatibility
+        return " " + str(self.attrs)
 
 class AttributeList(dict):
     """List of atributes of input.
@@ -284,7 +285,7 @@ class Checkbox(Input):
         Input.__init__(self, name, *validators, **attrs)
         
     def get_default_id(self):
-        value = self.value or ""
+        value = utils.safestr(self.value or "")
         return self.name + '_' + value.replace(' ', '_')
 
     def render(self):
@@ -298,8 +299,7 @@ class Checkbox(Input):
         return '<input %s/>' % attrs
 
     def set_value(self, value):
-        if value:
-            self.checked = True
+        self.checked = bool(value)
 
     def get_value(self):
         return self.checked
