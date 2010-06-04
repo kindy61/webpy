@@ -328,6 +328,9 @@ class application:
         
         def wsgi(env, start_resp):
             stime = time.time()
+            # clear threadlocal to avoid inteference of previous requests
+            self._cleanup()
+
             self.load(env)
             try:
                 # allow uppercase methods only
